@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>voice_training_tool</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.local.voice-training-tool</string>
+    <key>CFBundleName</key>
+    <string>Voice Training Tool</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>This app does not use the microphone.</string>
+</dict>
+</plist>

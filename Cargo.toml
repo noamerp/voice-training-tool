@@ -1,0 +1,13 @@
+[package]
+name = "voice_training_tool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.31"
+rodio = "0.20"
+resvg = "0.44"
+rand = "0.8"
+
+[build-dependencies]
+ureq = "2"
