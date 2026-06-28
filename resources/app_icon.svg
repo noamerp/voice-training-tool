@@ -1,31 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#EF4444"/>
-      <stop offset="100%" stop-color="#B91C1C"/>
+    <linearGradient id="flag" x1="0" y1="15" x2="0" y2="76" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#55CDFC"/>
+      <stop offset="20%"  stop-color="#55CDFC"/>
+      <stop offset="20%"  stop-color="#F7A8B8"/>
+      <stop offset="40%"  stop-color="#F7A8B8"/>
+      <stop offset="40%"  stop-color="#FFFFFF"/>
+      <stop offset="63%"  stop-color="#FFFFFF"/>
+      <stop offset="63%"  stop-color="#F7A8B8"/>
+      <stop offset="85%"  stop-color="#F7A8B8"/>
+      <stop offset="85%"  stop-color="#55CDFC"/>
+      <stop offset="100%" stop-color="#55CDFC"/>
     </linearGradient>
+    <mask id="mic">
+      <rect x="39" y="15" width="22" height="34" rx="11" fill="white"/>
+      <path d="M 30 45 A 20 20 0 0 0 70 45" stroke="white" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <line x1="50" y1="65" x2="50" y2="76" stroke="white" stroke-width="4" stroke-linecap="round"/>
+      <line x1="37" y1="76" x2="63" y2="76" stroke="white" stroke-width="4" stroke-linecap="round"/>
+      <path d="M 26 37 Q 21 47 26 57" stroke="white" stroke-width="3" fill="none" stroke-linecap="round" stroke-opacity="0.75"/>
+      <path d="M 74 37 Q 79 47 74 57" stroke="white" stroke-width="3" fill="none" stroke-linecap="round" stroke-opacity="0.75"/>
+      <path d="M 17 30 Q 9 47 17 64" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-opacity="0.4"/>
+      <path d="M 83 30 Q 91 47 83 64" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-opacity="0.4"/>
+    </mask>
   </defs>
 
-  <!-- Background rounded square -->
-  <rect width="100" height="100" rx="22" fill="url(#bg)"/>
-
-  <!-- Microphone capsule -->
-  <rect x="39" y="15" width="22" height="34" rx="11" fill="white"/>
-
-  <!-- Stand arc -->
-  <path d="M 30 45 A 20 20 0 0 0 70 45" stroke="white" stroke-width="4" fill="none" stroke-linecap="round"/>
-
-  <!-- Stem -->
-  <line x1="50" y1="65" x2="50" y2="76" stroke="white" stroke-width="4" stroke-linecap="round"/>
-
-  <!-- Base -->
-  <line x1="37" y1="76" x2="63" y2="76" stroke="white" stroke-width="4" stroke-linecap="round"/>
-
-  <!-- Inner sound waves -->
-  <path d="M 26 37 Q 21 47 26 57" stroke="white" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.75"/>
-  <path d="M 74 37 Q 79 47 74 57" stroke="white" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.75"/>
-
-  <!-- Outer sound waves -->
-  <path d="M 17 30 Q 9 47 17 64" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.4"/>
-  <path d="M 83 30 Q 91 47 83 64" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.4"/>
+  <rect width="100" height="100" rx="22" fill="black"/>
+  <rect width="100" height="100" fill="url(#flag)" mask="url(#mic)"/>
 </svg>
