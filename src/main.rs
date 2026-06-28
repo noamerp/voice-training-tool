@@ -266,8 +266,9 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
 
         let mut frame = egui::Frame::new();
-        frame.inner_margin.left += 8;
-        frame.inner_margin.right += 8;
+        frame.inner_margin.left += 16;
+        frame.inner_margin.right += 16;
+        frame.inner_margin.top += 12;
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Voice Training Tool");
