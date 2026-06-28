@@ -11,7 +11,8 @@ fn main() {
     )
     .call()
     .expect("failed to download Harvard sentences")
-    .into_string()
+    .body_mut()
+    .read_to_string()
     .expect("failed to read response body");
 
     // Extract every numbered sentence line ("1. …" through "10. …")

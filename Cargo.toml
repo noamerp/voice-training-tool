@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-eframe = "0.31"
-rodio = "0.20"
-resvg = "0.44"
-rand = "0.8"
+eframe = "0.35"
+rodio = "0.22"
+resvg = "0.47"
+rand = "0.10"
 
 [build-dependencies]
-ureq = "2"
+ureq = "3"

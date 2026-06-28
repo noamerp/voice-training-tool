@@ -3,8 +3,10 @@
 include!(concat!(env!("OUT_DIR"), "/harvard_sentences.rs"));
 
 use eframe::egui::{self, Color32, RichText, Vec2};
-use rand::Rng;
-use rodio::{source::Zero, OutputStream, Sink, Source};
+use rand::RngExt;
+use rodio::{
+    ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source, source::Zero,
+};
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
@@ -13,9 +15,9 @@ const OCTAVE: u8 = 12;
 const ROWS: u8 = 3; // E2-D#3, E3-D#4, E4-D#5
 
 static NOTE_NAMES: &[&str] = &[
-    "E2", "F2", "F#2", "G2", "G#2", "A2", "A#2", "B2", "C3", "C#3", "D3", "D#3",
-    "E3", "F3", "F#3", "G3", "G#3", "A3", "A#3", "B3", "C4", "C#4", "D4", "D#4",
-    "E4", "F4", "F#4", "G4", "G#4", "A4", "A#4", "B4", "C5", "C#5", "D5", "D#5",
+    "E2", "F2", "F#2", "G2", "G#2", "A2", "A#2", "B2", "C3", "C#3", "D3", "D#3", "E3", "F3", "F#3",
+    "G3", "G#3", "A3", "A#3", "B3", "C4", "C#4", "D4", "D#4", "E4", "F4", "F#4", "G4", "G#4", "A4",
+    "A#4", "B4", "C5", "C#5", "D5", "D#5",
 ];
 
 fn midi_to_freq(midi: u8) -> f32 {
@@ -32,7 +34,10 @@ fn note_colors(midi: u8) -> (Color32, Color32) {
     } else if (54..=61).contains(&midi) {
         (Color32::from_rgb(200, 80, 140), Color32::WHITE)
     } else {
-        (Color32::from_rgb(55, 55, 55), Color32::from_rgb(220, 220, 220))
+        (
+            Color32::from_rgb(55, 55, 55),
+            Color32::from_rgb(220, 220, 220),
+        )
     }
 }
 
@@ -44,7 +49,11 @@ struct SquareWave {
 
 impl SquareWave {
     fn new(freq: f32) -> Self {
-        SquareWave { freq, sample_rate: 44100, num_sample: 0 }
+        SquareWave {
+            freq,
+            sample_rate: 44100,
+            num_sample: 0,
+        }
     }
 }
 
@@ -53,15 +62,27 @@ impl Iterator for SquareWave {
     fn next(&mut self) -> Option<f32> {
         let t = self.num_sample as f32 / self.sample_rate as f32;
         self.num_sample += 1;
-        Some(if (t * self.freq).fract() < 0.5 { 1.0 } else { -1.0 })
+        Some(if (t * self.freq).fract() < 0.5 {
+            1.0
+        } else {
+            -1.0
+        })
     }
 }
 
 impl Source for SquareWave {
-    fn current_frame_len(&self) -> Option<usize> { None }
-    fn channels(&self) -> u16 { 1 }
-    fn sample_rate(&self) -> u32 { self.sample_rate }
-    fn total_duration(&self) -> Option<Duration> { None }
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> ChannelCount {
+        ChannelCount::new(1).unwrap()
+    }
+    fn sample_rate(&self) -> SampleRate {
+        SampleRate::new(self.sample_rate).unwrap()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
 }
 
 struct SineWave {
@@ -72,7 +93,11 @@ struct SineWave {
 
 impl SineWave {
     fn new(freq: f32) -> Self {
-        SineWave { freq, sample_rate: 44100, num_sample: 0 }
+        SineWave {
+            freq,
+            sample_rate: 44100,
+            num_sample: 0,
+        }
     }
 }
 
@@ -86,10 +111,18 @@ impl Iterator for SineWave {
 }
 
 impl Source for SineWave {
-    fn current_frame_len(&self) -> Option<usize> { None }
-    fn channels(&self) -> u16 { 1 }
-    fn sample_rate(&self) -> u32 { self.sample_rate }
-    fn total_duration(&self) -> Option<Duration> { None }
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> ChannelCount {
+        ChannelCount::new(1).unwrap()
+    }
+    fn sample_rate(&self) -> SampleRate {
+        SampleRate::new(self.sample_rate).unwrap()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
 }
 
 struct App {
@@ -97,9 +130,9 @@ struct App {
     timer_paused_remaining: Option<Duration>,
     timer_rung: bool,
     volume: f32,
-    _stream: OutputStream,
-    tone_sink: Sink,
-    ring_sink: Sink,
+    _stream: MixerDeviceSink,
+    tone_sink: Player,
+    ring_sink: Player,
     current_note: Option<u8>,
     current_list: usize,
     prev_list: usize,
@@ -107,16 +140,16 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.memory_mut(|m| m.options.input_options.max_click_duration = f64::INFINITY);
+        cc.egui_ctx
+            .memory_mut(|m| m.options.input_options.max_click_duration = f64::INFINITY);
 
-        let (stream, stream_handle) =
-            OutputStream::try_default().expect("failed to open audio output");
-        let tone_sink = Sink::try_new(&stream_handle).expect("failed to create tone sink");
-        let ring_sink = Sink::try_new(&stream_handle).expect("failed to create ring sink");
+        let stream = DeviceSinkBuilder::open_default_sink().expect("failed to open audio output");
+        let tone_sink = Player::connect_new(&stream.mixer());
+        let ring_sink = Player::connect_new(&stream.mixer());
         tone_sink.pause();
 
         let n = HARVARD_LISTS.len();
-        let current_list = rand::thread_rng().gen_range(0..n);
+        let current_list = rand::rng().random_range(0..n);
         let prev_list = (current_list + 1) % n;
 
         Self {
@@ -135,10 +168,10 @@ impl App {
 
     fn refresh_list(&mut self) {
         let n = HARVARD_LISTS.len();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         self.prev_list = self.current_list;
         self.current_list = loop {
-            let candidate = rng.gen_range(0..n);
+            let candidate = rng.random_range(0..n);
             if candidate != self.prev_list {
                 break candidate;
             }
@@ -178,7 +211,11 @@ impl App {
         }
         self.timer_end.map(|end| {
             let now = Instant::now();
-            if now >= end { Duration::ZERO } else { end - now }
+            if now >= end {
+                Duration::ZERO
+            } else {
+                end - now
+            }
         })
     }
 
@@ -199,19 +236,21 @@ impl App {
     }
 
     fn play_ring(&mut self) {
+        let ch = ChannelCount::new(1).unwrap();
+        let sr = SampleRate::new(44100).unwrap();
         self.ring_sink.clear();
         for _ in 0..3 {
             self.ring_sink
                 .append(SineWave::new(880.0).take_duration(Duration::from_millis(220)));
             self.ring_sink
-                .append(Zero::<f32>::new(1, 44100).take_duration(Duration::from_millis(130)));
+                .append(Zero::new(ch, sr).take_duration(Duration::from_millis(130)));
         }
         self.ring_sink.play();
     }
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.tone_sink.set_volume(self.volume);
         self.ring_sink.set_volume(self.volume);
 
@@ -224,13 +263,12 @@ impl eframe::App for App {
             }
         }
 
-        let panel_frame = {
-            let mut f = egui::Frame::central_panel(&ctx.style());
-            f.inner_margin.left += 8;
-            f.inner_margin.right += 8;
-            f
-        };
-        egui::CentralPanel::default().frame(panel_frame).show(ctx, |ui| {
+        let ctx = ui.ctx().clone();
+
+        let mut frame = egui::Frame::new();
+        frame.inner_margin.left += 8;
+        frame.inner_margin.right += 8;
+        frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Voice Training Tool");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -251,8 +289,19 @@ impl eframe::App for App {
             ui.add_space(4.0);
 
             ui.horizontal(|ui| {
-                for (label, secs) in [("30s", 30u64), ("1m", 60), ("2m", 120), ("5m", 300), ("10m", 600), ("15m", 900), ("30m", 1800)] {
-                    if ui.add_sized([52.0, 32.0], egui::Button::new(label)).clicked() {
+                for (label, secs) in [
+                    ("30s", 30u64),
+                    ("1m", 60),
+                    ("2m", 120),
+                    ("5m", 300),
+                    ("10m", 600),
+                    ("15m", 900),
+                    ("30m", 1800),
+                ] {
+                    if ui
+                        .add_sized([52.0, 32.0], egui::Button::new(label))
+                        .clicked()
+                    {
                         self.start_timer(secs);
                     }
                 }
@@ -261,8 +310,15 @@ impl eframe::App for App {
                 let has_timer = is_running || self.timer_paused_remaining.is_some();
                 ui.add_enabled_ui(has_timer, |ui| {
                     let symbol = if is_running { "⏸" } else { "▶" };
-                    if ui.add_sized([36.0, 32.0], egui::Button::new(symbol)).clicked() {
-                        if is_running { self.pause_timer(); } else { self.resume_timer(); }
+                    if ui
+                        .add_sized([36.0, 32.0], egui::Button::new(symbol))
+                        .clicked()
+                    {
+                        if is_running {
+                            self.pause_timer();
+                        } else {
+                            self.resume_timer();
+                        }
                     }
                 });
                 ui.add_enabled_ui(has_timer, |ui| {
@@ -292,7 +348,11 @@ impl eframe::App for App {
                 ui.label(RichText::new("Notes").strong().size(20.0));
                 if let Some(midi) = self.current_note {
                     let freq = midi_to_freq(midi);
-                    ui.label(RichText::new(format!("{} Hz", freq.round() as u32)).size(16.0).color(Color32::from_rgb(160, 160, 160)));
+                    ui.label(
+                        RichText::new(format!("{} Hz", freq.round() as u32))
+                            .size(16.0)
+                            .color(Color32::from_rgb(160, 160, 160)),
+                    );
                 }
             });
             ui.add_space(4.0);
@@ -314,10 +374,9 @@ impl eframe::App for App {
                         } else {
                             bg
                         };
-                        let btn = egui::Button::new(
-                            RichText::new(note_name(midi)).color(fg).size(11.0),
-                        )
-                        .fill(fill);
+                        let btn =
+                            egui::Button::new(RichText::new(note_name(midi)).color(fg).size(11.0))
+                                .fill(fill);
                         let resp = ui.add_sized(Vec2::new(46.0, 54.0), btn);
                         if resp.is_pointer_button_down_on() {
                             note_pressed = Some(midi);
@@ -373,8 +432,16 @@ fn load_icon() -> egui::IconData {
     let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size).expect("failed to create pixmap");
     let sx = size as f32 / tree.size().width();
     let sy = size as f32 / tree.size().height();
-    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(sx, sy), &mut pixmap.as_mut());
-    egui::IconData { rgba: pixmap.take(), width: size, height: size }
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(sx, sy),
+        &mut pixmap.as_mut(),
+    );
+    egui::IconData {
+        rgba: pixmap.take(),
+        width: size,
+        height: size,
+    }
 }
 
 fn main() -> eframe::Result<()> {
