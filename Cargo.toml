@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-eframe = "0.35"
+eframe = { version = "0.35", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
 rodio = "0.22"
 resvg = "0.47"
 rand = "0.10"
