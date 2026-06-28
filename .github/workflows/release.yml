@@ -18,7 +18,7 @@ jobs:
       - id: version
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
   build:
     needs: get-version
@@ -31,7 +31,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             asset: voice-training-tool-macos-aarch64
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             asset: voice-training-tool-macos-x86_64
           - os: windows-latest
@@ -94,6 +94,6 @@ jobs:
         run: |
           printf '%s' "${{ inputs.description }}" > release_notes.txt
           gh release create "v${{ needs.get-version.outputs.version }}" \
-            --title "v${{ needs.get-version.outputs.version }}" \
+            --title "Voice Training Tool v${{ needs.get-version.outputs.version }}" \
             --notes-file release_notes.txt \
             artifacts/*
