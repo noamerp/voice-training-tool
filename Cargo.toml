@@ -8,9 +8,10 @@ eframe = { version = "0.35", default-features = false, features = ["glow", "defa
 rodio = "0.22"
 resvg = "0.47"
 rand = "0.10"
-directories = "5"
+directories = "6"
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
+cpal = "0.18"
 
 [build-dependencies]
 ureq = "3"

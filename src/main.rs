@@ -3,6 +3,7 @@
 include!(concat!(env!("OUT_DIR"), "/harvard_sentences.rs"));
 include!(concat!(env!("OUT_DIR"), "/common_voice_sentences.rs"));
 
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use directories::ProjectDirs;
 use eframe::egui::{self, Color32, RichText, Vec2};
 use rand::RngExt;
@@ -13,7 +14,7 @@ use rodio::{
 use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const E2_MIDI: u8 = 40;
@@ -128,6 +129,73 @@ impl Source for SineWave {
     }
     fn total_duration(&self) -> Option<Duration> {
         None
+    }
+}
+
+enum VoiceState {
+    Idle,
+    Recording {
+        buffer: Arc<Mutex<Vec<f32>>>,
+        _stream: cpal::Stream,
+        sample_rate: u32,
+    },
+    Playing {
+        buffer: Arc<Vec<f32>>,
+        sample_rate: u32,
+        started_at: Instant,
+    },
+}
+
+struct BufferSource {
+    data: Arc<Vec<f32>>,
+    pos: usize,
+    sample_rate: u32,
+}
+
+impl Iterator for BufferSource {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        if self.pos < self.data.len() {
+            let s = self.data[self.pos];
+            self.pos += 1;
+            Some(s)
+        } else {
+            None
+        }
+    }
+}
+
+impl Source for BufferSource {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> ChannelCount {
+        ChannelCount::new(1).unwrap()
+    }
+    fn sample_rate(&self) -> SampleRate {
+        SampleRate::new(self.sample_rate).unwrap()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs_f32(
+            self.data.len() as f32 / self.sample_rate as f32,
+        ))
+    }
+}
+
+fn voice_icon_color(state: &VoiceState, amplitude: f32) -> Color32 {
+    let t = amplitude;
+    match state {
+        VoiceState::Idle => Color32::from_rgb(140, 140, 140),
+        VoiceState::Recording { .. } => Color32::from_rgb(
+            (180.0 + 75.0 * t) as u8,
+            (50.0 + 50.0 * t) as u8,
+            (50.0 * (1.0 - t)) as u8,
+        ),
+        VoiceState::Playing { .. } => Color32::from_rgb(
+            (50.0 * (1.0 - t)) as u8,
+            (160.0 + 95.0 * t) as u8,
+            (50.0 + 30.0 * t) as u8,
+        ),
     }
 }
 
@@ -381,6 +449,10 @@ struct App {
     current_list: usize,
     prev_list: usize,
     cv_current_sentences: Vec<&'static str>,
+    voice_state: VoiceState,
+    voice_amplitude: f32,
+    voice_btn_down: bool,
+    voice_sink: Player,
 }
 
 impl App {
@@ -392,6 +464,7 @@ impl App {
         let stream = DeviceSinkBuilder::open_default_sink().expect("failed to open audio output");
         let tone_sink = Player::connect_new(&stream.mixer());
         let ring_sink = Player::connect_new(&stream.mixer());
+        let voice_sink = Player::connect_new(&stream.mixer());
         tone_sink.pause();
 
         let settings = load_settings();
@@ -419,6 +492,10 @@ impl App {
             current_list,
             prev_list,
             cv_current_sentences,
+            voice_state: VoiceState::Idle,
+            voice_amplitude: 0.0,
+            voice_btn_down: false,
+            voice_sink,
         }
     }
 
@@ -511,20 +588,166 @@ impl App {
         }
         self.ring_sink.play();
     }
+
+    fn start_recording(&mut self) {
+        let host = cpal::default_host();
+        let Some(device) = host.default_input_device() else {
+            return;
+        };
+        let Ok(config) = device.default_input_config() else {
+            return;
+        };
+        let sample_rate = config.sample_rate();
+        let channels = config.channels() as usize;
+        let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let buf_clone = buffer.clone();
+
+        let stream = match config.sample_format() {
+            cpal::SampleFormat::F32 => device
+                .build_input_stream(
+                    config.into(),
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let mut buf = buf_clone.lock().unwrap();
+                        for frame in data.chunks(channels) {
+                            buf.push(frame.iter().sum::<f32>() / channels as f32);
+                        }
+                    },
+                    |_| {},
+                    None,
+                )
+                .ok(),
+            cpal::SampleFormat::I16 => device
+                .build_input_stream(
+                    config.into(),
+                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        let mut buf = buf_clone.lock().unwrap();
+                        for frame in data.chunks(channels) {
+                            let mono = frame
+                                .iter()
+                                .map(|&s| s as f32 / i16::MAX as f32)
+                                .sum::<f32>()
+                                / channels as f32;
+                            buf.push(mono);
+                        }
+                    },
+                    |_| {},
+                    None,
+                )
+                .ok(),
+            _ => None,
+        };
+
+        if let Some(stream) = stream {
+            let _ = stream.play();
+            self.voice_state = VoiceState::Recording {
+                buffer,
+                _stream: stream,
+                sample_rate,
+            };
+        }
+    }
+
+    fn finish_recording(&mut self) {
+        let prev = std::mem::replace(&mut self.voice_state, VoiceState::Idle);
+        if let VoiceState::Recording {
+            buffer,
+            sample_rate,
+            ..
+        } = prev
+        {
+            let mut data: Vec<f32> = buffer.lock().unwrap().clone();
+            if !data.is_empty() {
+                let rms = (data.iter().map(|s| s * s).sum::<f32>() / data.len() as f32).sqrt();
+                if rms > 0.001 {
+                    let gain = (0.7 / rms).min(30.0);
+                    for s in data.iter_mut() {
+                        *s *= gain;
+                    }
+                }
+                let data = Arc::new(data);
+                self.voice_sink.clear();
+                self.voice_sink.append(BufferSource {
+                    data: data.clone(),
+                    pos: 0,
+                    sample_rate,
+                });
+                self.voice_sink.set_volume(self.settings.volume * 0.35);
+                self.voice_sink.play();
+                self.voice_state = VoiceState::Playing {
+                    buffer: data,
+                    sample_rate,
+                    started_at: Instant::now(),
+                };
+            }
+        }
+    }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        self.tone_sink.set_volume(self.settings.volume);
-        self.ring_sink.set_volume(self.settings.volume);
+        self.tone_sink.set_volume(self.settings.volume * 0.12);
+        self.ring_sink.set_volume(self.settings.volume * 0.5);
+        self.voice_sink.set_volume(self.settings.volume * 0.35);
 
         if self.timer_end.is_some() {
             if let Some(rem) = self.remaining() {
                 if rem == Duration::ZERO && !self.timer_rung {
                     self.timer_rung = true;
                     self.play_ring();
+                }
+            }
+        }
+
+        // Update voice amplitude and check playback completion
+        {
+            let raw_amplitude = match &self.voice_state {
+                VoiceState::Recording { buffer, .. } => {
+                    let buf = buffer.lock().unwrap();
+                    let len = buf.len();
+                    if len >= 512 {
+                        let window = &buf[len - 512..];
+                        let rms = (window.iter().map(|s| s * s).sum::<f32>() / 512.0).sqrt();
+                        (rms * 6.0).min(1.0)
+                    } else {
+                        0.0
+                    }
+                }
+                VoiceState::Playing {
+                    buffer,
+                    sample_rate,
+                    started_at,
+                } => {
+                    let pos = (started_at.elapsed().as_secs_f32() * *sample_rate as f32) as usize;
+                    let end = pos.min(buffer.len());
+                    let start = end.saturating_sub(512);
+                    if end > start {
+                        let rms = (buffer[start..end].iter().map(|s| s * s).sum::<f32>()
+                            / (end - start) as f32)
+                            .sqrt();
+                        (rms * 6.0).min(1.0)
+                    } else {
+                        0.0
+                    }
+                }
+                VoiceState::Idle => 0.0,
+            };
+            if raw_amplitude > self.voice_amplitude {
+                self.voice_amplitude = self.voice_amplitude * 0.3 + raw_amplitude * 0.7;
+            } else {
+                self.voice_amplitude = self.voice_amplitude * 0.85 + raw_amplitude * 0.15;
+            }
+            if let VoiceState::Playing {
+                buffer,
+                sample_rate,
+                started_at,
+            } = &self.voice_state
+            {
+                let duration = buffer.len() as f32 / *sample_rate as f32;
+                if started_at.elapsed().as_secs_f32() >= duration {
+                    self.voice_state = VoiceState::Idle;
+                    self.voice_amplitude = 0.0;
                 }
             }
         }
@@ -550,62 +773,107 @@ impl eframe::App for App {
             ui.separator();
             ui.add_space(6.0);
 
-            // --- Timer ---
-            ui.label(RichText::new("Timer").strong().size(20.0));
-            ui.add_space(4.0);
-
-            ui.horizontal(|ui| {
-                for (label, secs) in [
-                    ("30s", 30u64),
-                    ("1m", 60),
-                    ("2m", 120),
-                    ("5m", 300),
-                    ("10m", 600),
-                    ("15m", 900),
-                    ("30m", 1800),
-                ] {
-                    if ui
-                        .add_sized([52.0, 32.0], egui::Button::new(label))
-                        .clicked()
-                    {
-                        self.start_timer(secs);
-                    }
-                }
-                ui.add_space(12.0);
-                let is_running = self.timer_end.is_some();
-                let has_timer = is_running || self.timer_paused_remaining.is_some();
-                ui.add_enabled_ui(has_timer, |ui| {
-                    let symbol = if is_running { "⏸" } else { "▶" };
-                    if ui
-                        .add_sized([36.0, 32.0], egui::Button::new(symbol))
-                        .clicked()
-                    {
-                        if is_running {
-                            self.pause_timer();
-                        } else {
-                            self.resume_timer();
+            // --- Timer + Voice Feedback ---
+            let mut voice_is_down = false;
+            ui.columns(2, |cols| {
+                // Left: Timer
+                cols[0].label(RichText::new("Timer").strong().size(20.0));
+                cols[0].add_space(4.0);
+                cols[0].horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    for (label, secs) in [
+                        ("30s", 30u64),
+                        ("1m", 60),
+                        ("2m", 120),
+                        ("5m", 300),
+                        ("10m", 600),
+                        ("15m", 900),
+                        ("30m", 1800),
+                    ] {
+                        if ui
+                            .add_sized([42.0, 30.0], egui::Button::new(label))
+                            .clicked()
+                        {
+                            self.start_timer(secs);
                         }
                     }
                 });
-                ui.add_enabled_ui(has_timer, |ui| {
-                    if ui.add_sized([36.0, 32.0], egui::Button::new("⏹")).clicked() {
-                        self.stop_timer();
+                cols[0].add_space(6.0);
+                let is_running = self.timer_end.is_some();
+                let has_timer = is_running || self.timer_paused_remaining.is_some();
+                let display = match self.remaining() {
+                    Some(rem) => {
+                        let s = rem.as_secs();
+                        format!("{:02}:{:02}", s / 60, s % 60)
                     }
+                    None => "--:--".to_string(),
+                };
+                cols[0].horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    ui.add_enabled_ui(has_timer, |ui| {
+                        let symbol = if is_running { "⏸" } else { "▶" };
+                        if ui
+                            .add_sized(
+                                [50.0, 35.0],
+                                egui::Button::new(RichText::new(symbol).size(20.0)),
+                            )
+                            .clicked()
+                        {
+                            if is_running {
+                                self.pause_timer();
+                            } else {
+                                self.resume_timer();
+                            }
+                        }
+                    });
+                    ui.add_enabled_ui(has_timer, |ui| {
+                        if ui
+                            .add_sized(
+                                [50.0, 35.0],
+                                egui::Button::new(RichText::new("⏹").size(20.0)),
+                            )
+                            .clicked()
+                        {
+                            self.stop_timer();
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(display).size(30.0));
+                });
+
+                // Right: Voice Feedback
+                cols[1].label(RichText::new("Voice Feedback").strong().size(20.0));
+                cols[1].add_space(4.0);
+                let icon_color = voice_icon_color(&self.voice_state, self.voice_amplitude);
+                let btn = egui::Button::new(RichText::new("🎤").size(42.0).color(icon_color))
+                    .fill(Color32::from_rgb(35, 35, 35))
+                    .min_size(Vec2::new(74.0, 74.0));
+                cols[1].horizontal(|ui| {
+                    let resp = ui.add(btn);
+                    voice_is_down = resp.is_pointer_button_down_on();
+                    let status = match &self.voice_state {
+                        VoiceState::Idle => "Hold to record",
+                        VoiceState::Recording { .. } => "Recording...",
+                        VoiceState::Playing { .. } => "Playing back...",
+                    };
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(status)
+                            .size(16.0)
+                            .color(Color32::from_rgb(160, 160, 160)),
+                    );
                 });
             });
 
-            ui.add_space(10.0);
+            if voice_is_down && !self.voice_btn_down {
+                self.start_recording();
+            }
+            if !voice_is_down && self.voice_btn_down {
+                self.finish_recording();
+            }
+            self.voice_btn_down = voice_is_down;
 
-            let display = match self.remaining() {
-                Some(rem) => {
-                    let s = rem.as_secs();
-                    format!("{:02}:{:02}", s / 60, s % 60)
-                }
-                None => "--:--".to_string(),
-            };
-            ui.label(RichText::new(format!("Time remaining: {display}")).size(22.0));
-
-            ui.add_space(10.0);
+            ui.add_space(8.0);
             ui.separator();
             ui.add_space(8.0);
 
@@ -627,7 +895,7 @@ impl eframe::App for App {
 
             for row in 0..ROWS {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.spacing_mut().item_spacing.x = 5.0;
                     for col in 0..OCTAVE {
                         let midi = E2_MIDI + row * OCTAVE + col;
                         let (bg, fg) = note_colors(midi);
@@ -641,9 +909,9 @@ impl eframe::App for App {
                             bg
                         };
                         let btn =
-                            egui::Button::new(RichText::new(note_name(midi)).color(fg).size(11.0))
+                            egui::Button::new(RichText::new(note_name(midi)).color(fg).size(14.0))
                                 .fill(fill);
-                        let resp = ui.add_sized(Vec2::new(46.0, 54.0), btn);
+                        let resp = ui.add_sized(Vec2::new(50.0, 46.0), btn);
                         if resp.is_pointer_button_down_on() {
                             note_pressed = Some(midi);
                         }
