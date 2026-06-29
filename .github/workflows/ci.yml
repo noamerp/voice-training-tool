@@ -23,6 +23,8 @@ jobs:
             libxcb-xfixes0-dev \
             libxkbcommon-dev
       - run: cargo check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   fmt:
     runs-on: ubuntu-latest

@@ -59,6 +59,8 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./bundle.sh
 
       - name: Stage artifact

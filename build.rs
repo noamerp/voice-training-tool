@@ -54,14 +54,18 @@ fn main() {
     // --- Common Voice sentences ---
     let mut rng = rand::rng();
 
-    let json_text =
+    let mut req =
         ureq::get("https://api.github.com/repos/common-voice/common-voice/contents/server/data")
-            .header("User-Agent", "voice-training-tool-build/1.0")
-            .call()
-            .expect("failed to fetch Common Voice language list")
-            .body_mut()
-            .read_to_string()
-            .expect("failed to read language list response");
+            .header("User-Agent", "voice-training-tool-build/1.0");
+    if let Ok(token) = env::var("GITHUB_TOKEN") {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    }
+    let json_text = req
+        .call()
+        .expect("failed to fetch Common Voice language list")
+        .body_mut()
+        .read_to_string()
+        .expect("failed to read language list response");
 
     let entries: Vec<GithubEntry> =
         serde_json::from_str(&json_text).expect("failed to parse Common Voice language list");
