@@ -8,8 +8,9 @@ A desktop app for voice training practice, built with Rust and egui. Runs on mac
 
 - **Timer** — preset durations (30s, 1m, 2m, 5m, 10m, 15m, 30m) with pause/resume and stop controls
 - **Note buttons** — 36 notes across three octaves (E2–D#5), producing a square wave tone while held; displays the note's frequency in Hz
-- **Volume slider** — controls both note and timer alert volume
-- **Harvard sentences** — random list of 10 phonetically balanced sentences for reading practice, with a Refresh button to cycle to a new list
+- **Sentences** — reading practice sentences, choose between:
+  - *Harvard sentences* — phonetically balanced English sentences
+  - *Common Voice* — sentences in 100+ languages from the [Mozilla Common Voice](https://commonvoice.mozilla.org/) dataset
 
 ## Requirements
 
