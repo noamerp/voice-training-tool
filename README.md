@@ -2,7 +2,7 @@
 
 A desktop app for voice training practice, built with Rust and egui. Runs on macOS, Linux, and Windows. Tailored for the [Pitch Naturalisation](https://wiki.sumianvoice.com/wiki/pages/PIPM/) method developed by [Sumi](https://sumianvoice.com/#).
 
-![Voice Training Tool](resources/screenshot.png)
+![Voice Training Tool](resources/screenshot.webp)
 
 ## Features
 

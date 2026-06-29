@@ -1,13 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 include!(concat!(env!("OUT_DIR"), "/harvard_sentences.rs"));
+include!(concat!(env!("OUT_DIR"), "/common_voice_sentences.rs"));
 
+use directories::ProjectDirs;
 use eframe::egui::{self, Color32, RichText, Vec2};
 use rand::RngExt;
+use rand::seq::SliceRandom;
 use rodio::{
     ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source, source::Zero,
 };
+use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const E2_MIDI: u8 = 40;
@@ -125,57 +131,315 @@ impl Source for SineWave {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+enum Dataset {
+    Harvard,
+    CommonVoice,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Settings {
+    volume: f32,
+    dataset: Dataset,
+    cv_language: String,
+    cv_sentence_count: usize,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            volume: 0.3,
+            dataset: Dataset::Harvard,
+            cv_language: "en".to_string(),
+            cv_sentence_count: 10,
+        }
+    }
+}
+
+fn settings_path() -> Option<PathBuf> {
+    ProjectDirs::from("", "", "VoiceTrainingTool")
+        .map(|dirs| dirs.config_dir().join("settings.toml"))
+}
+
+fn load_settings() -> Settings {
+    settings_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings(settings: &Settings) {
+    if let Some(path) = settings_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(s) = toml::to_string(settings) {
+            let _ = std::fs::write(path, s);
+        }
+    }
+}
+
+fn pick_cv_sentences(lang: &str, count: usize) -> Vec<&'static str> {
+    let sentences = COMMON_VOICE_SENTENCES
+        .iter()
+        .find(|(l, _)| *l == lang)
+        .map(|(_, s)| *s)
+        .unwrap_or(&[]);
+    if sentences.is_empty() {
+        return vec![];
+    }
+    let count = count.min(sentences.len());
+    let mut indices: Vec<usize> = (0..sentences.len()).collect();
+    indices.shuffle(&mut rand::rng());
+    indices[..count].iter().map(|&i| sentences[i]).collect()
+}
+
+fn setup_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    // Candidate system font paths, tried in order and added as fallbacks after the default
+    // Latin/Cyrillic/Greek fonts. Any path that doesn't exist is silently skipped.
+    let candidates: &[&str] = &[
+        // ── macOS ─────────────────────────────────────────────────────────────────
+        // CJK
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        // Arabic (ar, ckb, fa, ps, skr, ug, ur)
+        "/System/Library/Fonts/SFArabic.ttf",
+        "/System/Library/Fonts/GeezaPro.ttc",
+        // Hebrew (he, yi)
+        "/System/Library/Fonts/SFHebrew.ttf",
+        // Georgian (ka)
+        "/System/Library/Fonts/SFGeorgian.ttf",
+        // Devanagari (hi, mr, ne-NP)
+        "/System/Library/Fonts/Kohinoor.ttc",
+        "/System/Library/Fonts/Supplemental/ITFDevanagari.ttc",
+        // Bengali/Assamese (as)
+        "/System/Library/Fonts/KohinoorBangla.ttc",
+        // Telugu (te)
+        "/System/Library/Fonts/KohinoorTelugu.ttc",
+        "/System/Library/Fonts/Supplemental/Telugu MN.ttc",
+        // Kannada (kn)
+        "/System/Library/Fonts/NotoSansKannada.ttc",
+        // Odia (or)
+        "/System/Library/Fonts/NotoSansOriya.ttc",
+        "/System/Library/Fonts/Supplemental/Oriya MN.ttc",
+        // Myanmar (my)
+        "/System/Library/Fonts/NotoSansMyanmar.ttc",
+        "/System/Library/Fonts/Supplemental/Myanmar MN.ttc",
+        // Thai (th)
+        "/System/Library/Fonts/ThonburiUI.ttc",
+        // Ethiopic (am, ti, tig)
+        "/System/Library/Fonts/Supplemental/KefaIII.ttf",
+        // Tamil (ta)
+        "/System/Library/Fonts/Supplemental/Tamil MN.ttc",
+        // Malayalam (ml)
+        "/System/Library/Fonts/Supplemental/Malayalam MN.ttc",
+        // Gurmukhi/Punjabi (pa-IN)
+        "/System/Library/Fonts/Supplemental/Gurmukhi MN.ttc",
+        // Khmer (km)
+        "/System/Library/Fonts/Supplemental/Khmer MN.ttc",
+        // Lao (lo)
+        "/System/Library/Fonts/Supplemental/Lao MN.ttc",
+        // Sinhala (si)
+        "/System/Library/Fonts/Supplemental/Sinhala MN.ttc",
+        // Thaana (dv)
+        "/System/Library/Fonts/Supplemental/NotoSansThaana-Regular.ttf",
+        // Tifinagh (zgh)
+        "/System/Library/Fonts/Supplemental/NotoSansTifinagh-Regular.otf",
+        // Ol Chiki (sat)
+        "/System/Library/Fonts/Supplemental/NotoSansOlChiki-Regular.ttf",
+        // Broad Unicode fallback
+        "/Library/Fonts/Arial Unicode.ttf",
+        // ── Linux ─────────────────────────────────────────────────────────────────
+        // CJK (multiple common distro paths)
+        "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        // Arabic
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/noto/NotoNaskhArabic-Regular.ttf",
+        // Hebrew
+        "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSansHebrew-Regular.ttf",
+        // Georgian
+        "/usr/share/fonts/truetype/noto/NotoSansGeorgian-Regular.ttf",
+        // Devanagari
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSansDevanagari-Regular.ttf",
+        // Bengali
+        "/usr/share/fonts/truetype/noto/NotoSansBengali-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSansBengali-Regular.ttf",
+        // Telugu
+        "/usr/share/fonts/truetype/noto/NotoSansTelugu-Regular.ttf",
+        // Kannada
+        "/usr/share/fonts/truetype/noto/NotoSansKannada-Regular.ttf",
+        // Odia
+        "/usr/share/fonts/truetype/noto/NotoSansOriya-Regular.ttf",
+        // Myanmar
+        "/usr/share/fonts/truetype/noto/NotoSansMyanmar-Regular.ttf",
+        // Thai
+        "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSansThai-Regular.ttf",
+        // Ethiopic
+        "/usr/share/fonts/truetype/noto/NotoSansEthiopic-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSansEthiopic-Regular.ttf",
+        // Tamil
+        "/usr/share/fonts/truetype/noto/NotoSansTamil-Regular.ttf",
+        // Malayalam
+        "/usr/share/fonts/truetype/noto/NotoSansMalayalam-Regular.ttf",
+        // Gurmukhi
+        "/usr/share/fonts/truetype/noto/NotoSansGurmukhi-Regular.ttf",
+        // Khmer
+        "/usr/share/fonts/truetype/noto/NotoSansKhmer-Regular.ttf",
+        // Lao
+        "/usr/share/fonts/truetype/noto/NotoSansLao-Regular.ttf",
+        // Sinhala
+        "/usr/share/fonts/truetype/noto/NotoSansSinhala-Regular.ttf",
+        // Thaana
+        "/usr/share/fonts/truetype/noto/NotoSansThaana-Regular.ttf",
+        // Tifinagh
+        "/usr/share/fonts/truetype/noto/NotoSansTifinagh-Regular.ttf",
+        // Ol Chiki
+        "/usr/share/fonts/truetype/noto/NotoSansOlChiki-Regular.ttf",
+        // ── Windows ───────────────────────────────────────────────────────────────
+        // CJK
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+        "C:\\Windows\\Fonts\\simhei.ttf",
+        // Arabic + Hebrew + Thai (Tahoma covers all three)
+        "C:\\Windows\\Fonts\\tahoma.ttf",
+        // Georgian
+        "C:\\Windows\\Fonts\\sylfaen.ttf",
+        // Devanagari
+        "C:\\Windows\\Fonts\\mangal.ttf",
+        // Bengali
+        "C:\\Windows\\Fonts\\vrinda.ttf",
+        // Telugu
+        "C:\\Windows\\Fonts\\gautami.ttf",
+        // Kannada
+        "C:\\Windows\\Fonts\\tunga.ttf",
+        // Odia
+        "C:\\Windows\\Fonts\\kalinga.ttf",
+        // Myanmar
+        "C:\\Windows\\Fonts\\mmrtext.ttf",
+        // Thai (also in tahoma.ttf above)
+        "C:\\Windows\\Fonts\\leelawad.ttf",
+        // Ethiopic
+        "C:\\Windows\\Fonts\\ebrima.ttf",
+        // Tamil
+        "C:\\Windows\\Fonts\\latha.ttf",
+        // Malayalam
+        "C:\\Windows\\Fonts\\kartika.ttf",
+        // Gurmukhi
+        "C:\\Windows\\Fonts\\raavi.ttf",
+        // Khmer
+        "C:\\Windows\\Fonts\\khmeruib.ttf",
+        // Lao
+        "C:\\Windows\\Fonts\\laoui.ttf",
+        // Sinhala
+        "C:\\Windows\\Fonts\\iskpota.ttf",
+        // Broad Unicode fallback
+        "C:\\Windows\\Fonts\\ARIALUNI.TTF",
+    ];
+
+    for (i, path) in candidates.iter().enumerate() {
+        if let Ok(data) = std::fs::read(path) {
+            let name = format!("unicode_fallback_{i}");
+            fonts
+                .font_data
+                .insert(name.clone(), Arc::new(egui::FontData::from_owned(data)));
+            for family in [
+                &egui::FontFamily::Proportional,
+                &egui::FontFamily::Monospace,
+            ] {
+                fonts
+                    .families
+                    .entry(family.clone())
+                    .or_default()
+                    .push(name.clone());
+            }
+        }
+    }
+
+    ctx.set_fonts(fonts);
+}
+
 struct App {
     timer_end: Option<Instant>,
     timer_paused_remaining: Option<Duration>,
     timer_rung: bool,
-    volume: f32,
+    settings: Settings,
+    settings_open: bool,
     _stream: MixerDeviceSink,
     tone_sink: Player,
     ring_sink: Player,
     current_note: Option<u8>,
     current_list: usize,
     prev_list: usize,
+    cv_current_sentences: Vec<&'static str>,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx
             .memory_mut(|m| m.options.input_options.max_click_duration = f64::INFINITY);
+        setup_fonts(&cc.egui_ctx);
 
         let stream = DeviceSinkBuilder::open_default_sink().expect("failed to open audio output");
         let tone_sink = Player::connect_new(&stream.mixer());
         let ring_sink = Player::connect_new(&stream.mixer());
         tone_sink.pause();
 
+        let settings = load_settings();
+
         let n = HARVARD_LISTS.len();
         let current_list = rand::rng().random_range(0..n);
         let prev_list = (current_list + 1) % n;
+
+        let cv_current_sentences = if settings.dataset == Dataset::CommonVoice {
+            pick_cv_sentences(&settings.cv_language, settings.cv_sentence_count)
+        } else {
+            vec![]
+        };
 
         Self {
             timer_end: None,
             timer_paused_remaining: None,
             timer_rung: false,
-            volume: 0.3,
+            settings,
+            settings_open: false,
             _stream: stream,
             tone_sink,
             ring_sink,
             current_note: None,
             current_list,
             prev_list,
+            cv_current_sentences,
         }
     }
 
-    fn refresh_list(&mut self) {
-        let n = HARVARD_LISTS.len();
-        let mut rng = rand::rng();
-        self.prev_list = self.current_list;
-        self.current_list = loop {
-            let candidate = rng.random_range(0..n);
-            if candidate != self.prev_list {
-                break candidate;
+    fn refresh_sentences(&mut self) {
+        match self.settings.dataset {
+            Dataset::Harvard => {
+                let n = HARVARD_LISTS.len();
+                let mut rng = rand::rng();
+                self.prev_list = self.current_list;
+                self.current_list = loop {
+                    let candidate = rng.random_range(0..n);
+                    if candidate != self.prev_list {
+                        break candidate;
+                    }
+                };
             }
-        };
+            Dataset::CommonVoice => {
+                self.cv_current_sentences =
+                    pick_cv_sentences(&self.settings.cv_language, self.settings.cv_sentence_count);
+            }
+        }
     }
 
     fn start_timer(&mut self, secs: u64) {
@@ -251,8 +515,10 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.tone_sink.set_volume(self.volume);
-        self.ring_sink.set_volume(self.volume);
+        let ctx = ui.ctx().clone();
+
+        self.tone_sink.set_volume(self.settings.volume);
+        self.ring_sink.set_volume(self.settings.volume);
 
         if self.timer_end.is_some() {
             if let Some(rem) = self.remaining() {
@@ -263,22 +529,21 @@ impl eframe::App for App {
             }
         }
 
-        let ctx = ui.ctx().clone();
-
         let mut frame = egui::Frame::new();
         frame.inner_margin.left += 16;
         frame.inner_margin.right += 16;
         frame.inner_margin.top += 12;
-        frame.show(ui, |ui| {
+        let frame_resp = frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Voice Training Tool");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(
-                        egui::Slider::new(&mut self.volume, 0.0..=1.0)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    );
-                    ui.label("Volume:");
+                    if ui
+                        .button(RichText::new("⚙").size(20.0))
+                        .on_hover_text("Settings")
+                        .clicked()
+                    {
+                        self.settings_open = !self.settings_open;
+                    }
                 });
             });
             ui.add_space(6.0);
@@ -329,7 +594,7 @@ impl eframe::App for App {
                 });
             });
 
-            ui.add_space(4.0);
+            ui.add_space(10.0);
 
             let display = match self.remaining() {
                 Some(rem) => {
@@ -403,14 +668,18 @@ impl eframe::App for App {
                 ui.scope(|ui| {
                     ui.spacing_mut().button_padding = Vec2::new(14.0, 4.0);
                     if ui.button(RichText::new("Refresh").size(15.0)).clicked() {
-                        self.refresh_list();
+                        self.refresh_sentences();
                     }
                 });
             });
             ui.add_space(6.0);
 
             ui.indent("sentences", |ui| {
-                for (i, sentence) in HARVARD_LISTS[self.current_list].iter().enumerate() {
+                let sentences: &[&str] = match self.settings.dataset {
+                    Dataset::Harvard => HARVARD_LISTS[self.current_list],
+                    Dataset::CommonVoice => self.cv_current_sentences.as_slice(),
+                };
+                for (i, sentence) in sentences.iter().enumerate() {
                     ui.label(
                         RichText::new(format!("{}. {}", i + 1, sentence))
                             .size(15.0)
@@ -419,7 +688,94 @@ impl eframe::App for App {
                     ui.add_space(4.0);
                 }
             });
+            ui.add_space(12.0);
         });
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+            frame_resp.response.rect.size(),
+        ));
+
+        // --- Settings window ---
+        let mut settings_open = self.settings_open;
+        egui::Window::new("Settings")
+            .open(&mut settings_open)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(ctx.input(|i| i.viewport_rect()).center() - egui::Vec2::new(140.0, 100.0))
+            .default_width(280.0)
+            .show(&ctx, |ui| {
+                ui.label(RichText::new("Volume").strong());
+                let resp = ui.add(
+                    egui::Slider::new(&mut self.settings.volume, 0.0..=1.0)
+                        .show_value(false)
+                        .trailing_fill(true),
+                );
+                if resp.changed() {
+                    save_settings(&self.settings);
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.label(RichText::new("Sentence dataset").strong());
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let is_harvard = self.settings.dataset == Dataset::Harvard;
+                    if ui.selectable_label(is_harvard, "Harvard").clicked() && !is_harvard {
+                        self.settings.dataset = Dataset::Harvard;
+                        save_settings(&self.settings);
+                    }
+                    let is_cv = self.settings.dataset == Dataset::CommonVoice;
+                    if ui.selectable_label(is_cv, "Common Voice").clicked() && !is_cv {
+                        self.settings.dataset = Dataset::CommonVoice;
+                        if self.cv_current_sentences.is_empty() {
+                            self.cv_current_sentences = pick_cv_sentences(
+                                &self.settings.cv_language,
+                                self.settings.cv_sentence_count,
+                            );
+                        }
+                        save_settings(&self.settings);
+                    }
+                });
+
+                if self.settings.dataset == Dataset::CommonVoice {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Language").strong());
+                    let old_lang = self.settings.cv_language.clone();
+                    egui::ComboBox::from_label("")
+                        .selected_text(self.settings.cv_language.clone())
+                        .show_ui(ui, |ui| {
+                            for &lang in COMMON_VOICE_LANGUAGES {
+                                ui.selectable_value(
+                                    &mut self.settings.cv_language,
+                                    lang.to_string(),
+                                    lang,
+                                );
+                            }
+                        });
+                    if self.settings.cv_language != old_lang {
+                        self.cv_current_sentences = pick_cv_sentences(
+                            &self.settings.cv_language,
+                            self.settings.cv_sentence_count,
+                        );
+                        save_settings(&self.settings);
+                    }
+
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Sentences per refresh").strong());
+                    let mut count = self.settings.cv_sentence_count;
+                    if ui.add(egui::Slider::new(&mut count, 1..=20usize)).changed() {
+                        self.settings.cv_sentence_count = count;
+                        self.cv_current_sentences = pick_cv_sentences(
+                            &self.settings.cv_language,
+                            self.settings.cv_sentence_count,
+                        );
+                        save_settings(&self.settings);
+                    }
+                }
+            });
+        self.settings_open = settings_open;
 
         ctx.request_repaint_after(Duration::from_millis(50));
     }
@@ -448,7 +804,7 @@ fn load_icon() -> egui::IconData {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([640.0, 700.0])
+            .with_inner_size([620.0, 700.0])
             .with_resizable(false)
             .with_title("Voice Training Tool")
             .with_icon(std::sync::Arc::new(load_icon())),
